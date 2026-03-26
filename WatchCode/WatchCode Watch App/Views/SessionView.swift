@@ -5,6 +5,7 @@ struct SessionView: View {
     @Environment(RelayClient.self) private var client
     @Environment(\.dismiss) private var dismiss
     let sessionId: String
+    let provider: String?
     @State private var messageText = ""
     @State private var showingInput = false
 
@@ -55,7 +56,7 @@ struct SessionView: View {
             messageInputSheet
         }
         .task {
-            await client.connect(sessionId: sessionId)
+            await client.connect(sessionId: sessionId, provider: provider)
         }
         .onDisappear {
             Task { await client.disconnect() }
@@ -197,7 +198,7 @@ struct SessionView: View {
                         if let toolUse = item.toolUse, let toolResult = item.toolResult {
                             ToolEventRow(toolUse: toolUse, toolResult: toolResult)
                         } else if let event = item.event {
-                            EventRow(event: event)
+                            EventRow(event: event, provider: provider)
                         }
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -335,10 +336,18 @@ struct ConnectionBanner: View {
 
 struct EventRow: View {
     let event: WatchEvent
+    var provider: String? = nil
     @State private var expanded = false
 
     private var isExpandable: Bool {
         event.type == .assistant && event.content.count > 150
+    }
+
+    private var displayLabel: String {
+        if event.type == .assistant, let provider {
+            return provider == "codex" ? "CODEX" : "CLAUDE"
+        }
+        return event.label
     }
 
     var body: some View {
@@ -359,7 +368,7 @@ struct EventRow: View {
                             .font(.system(size: 7))
                             .foregroundStyle(event.color)
 
-                        Text(event.label)
+                        Text(displayLabel)
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
                             .foregroundStyle(event.color)
 

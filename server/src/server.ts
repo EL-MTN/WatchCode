@@ -1,8 +1,9 @@
 import express from "express";
 import { execSync } from "child_process";
-import type { Response } from "express";
 import type { Connection } from "./types.js";
-import { connectToSession, sendMessage, sendControl, listSessions, fetchSessionEvents } from "./anthropic.js";
+import type { Provider, ProviderName } from "./provider.js";
+import { AnthropicProvider } from "./anthropic.js";
+import { CodexProvider } from "./codex.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3847");
@@ -27,16 +28,37 @@ app.use("/api", (req, res, next) => {
 // --- In-memory connection store ---
 const connections = new Map<string, Connection>();
 
-// --- Credentials: env vars (production) or Keychain (local dev) ---
-let localToken: string | null = process.env.ANTHROPIC_TOKEN || null;
-let localOrgUuid: string | null = process.env.ANTHROPIC_ORG_UUID || null;
+// --- Provider registry ---
+const providers = new Map<ProviderName, Provider>();
 
-function loadLocalCredentials() {
-  // If env vars are set, skip Keychain entirely
-  if (localToken) {
+function initProviders() {
+  // Anthropic provider
+  const anthropicToken = loadAnthropicToken();
+  const anthropicOrgUuid = loadAnthropicOrgUuid();
+  if (anthropicToken) {
+    providers.set("anthropic", new AnthropicProvider(anthropicToken, anthropicOrgUuid));
+    console.log("[providers] Anthropic provider initialized");
+  } else {
+    console.log("[providers] Anthropic provider disabled (no token)");
+  }
+
+  // Codex provider
+  const codexUrl = process.env.CODEX_APP_SERVER_URL;
+  if (codexUrl) {
+    providers.set("codex", new CodexProvider(codexUrl));
+    console.log(`[providers] Codex provider initialized (${codexUrl})`);
+  } else {
+    console.log("[providers] Codex provider disabled (CODEX_APP_SERVER_URL not set)");
+  }
+}
+
+// --- Anthropic credential loading ---
+
+function loadAnthropicToken(): string | null {
+  const envToken = process.env.ANTHROPIC_TOKEN;
+  if (envToken) {
     console.log("[auth] Token loaded from ANTHROPIC_TOKEN env var");
-    if (localOrgUuid) console.log(`[auth] Org UUID from env: ${localOrgUuid}`);
-    return;
+    return envToken;
   }
 
   // Fall back to macOS Keychain for local dev
@@ -46,72 +68,87 @@ function loadLocalCredentials() {
       { encoding: "utf-8" }
     ).trim();
     const creds = JSON.parse(raw);
-    localToken = creds.claudeAiOauth?.accessToken || null;
-    if (localToken) console.log("[auth] OAuth token loaded from Keychain");
+    const token = creds.claudeAiOauth?.accessToken || null;
+    if (token) console.log("[auth] OAuth token loaded from Keychain");
+    return token;
   } catch {
-    console.log("[auth] Could not read Keychain — use Authorization header or set ANTHROPIC_TOKEN");
+    console.log("[auth] Could not read Keychain — set ANTHROPIC_TOKEN to enable Anthropic provider");
+    return null;
+  }
+}
+
+function loadAnthropicOrgUuid(): string {
+  const envUuid = process.env.ANTHROPIC_ORG_UUID;
+  if (envUuid) {
+    console.log(`[auth] Org UUID from env: ${envUuid}`);
+    return envUuid;
   }
 
   try {
     const status = JSON.parse(
       execSync("claude auth status 2>/dev/null", { encoding: "utf-8" }).trim()
     );
-    localOrgUuid = status.orgId || null;
-    if (localOrgUuid) console.log(`[auth] Org UUID: ${localOrgUuid}`);
+    const orgId = status.orgId || "";
+    if (orgId) console.log(`[auth] Org UUID: ${orgId}`);
+    return orgId;
   } catch {
-    // Not critical
+    return "";
   }
-}
-
-function getToken(req: express.Request): string | null {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  return localToken;
-}
-
-function getOrgUuid(req: express.Request): string {
-  return (req.headers["x-organization-uuid"] as string) || localOrgUuid || "";
 }
 
 // --- Routes ---
 
-// List available sessions
-app.get("/api/sessions", async (req, res) => {
-  const token = getToken(req);
-  const orgUuid = getOrgUuid(req);
-
-  if (!token) {
-    res.status(401).json({ error: "No OAuth token available" });
+// List available sessions (from all providers)
+app.get("/api/sessions", async (_req, res) => {
+  if (providers.size === 0) {
+    res.status(503).json({ error: "No providers configured" });
     return;
   }
 
   try {
-    const sessions = await listSessions(token, orgUuid);
+    const allSessions = await Promise.all(
+      [...providers.values()].map((p) => p.listSessions().catch(() => []))
+    );
+    const sessions = allSessions.flat();
+
+    // Sort: running/active first, then idle, then archived
+    const priority: Record<string, number> = { running: 0, active: 0, idle: 1, archived: 2 };
+    sessions.sort((a, b) => {
+      const pa = priority[a.status] ?? 2;
+      const pb = priority[b.status] ?? 2;
+      if (pa !== pb) return pa - pb;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+
     res.json({ sessions });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Connect to a Remote Control session
+// Connect to a session
 app.post("/api/connect", async (req, res) => {
-  const { sessionId } = req.body;
-  const token = getToken(req);
-  const orgUuid = getOrgUuid(req);
+  const { sessionId, provider: providerName } = req.body;
 
   if (!sessionId) {
     res.status(400).json({ error: "sessionId required" });
     return;
   }
-  if (!token) {
-    res.status(401).json({ error: "No OAuth token available" });
+
+  const provider = providerName
+    ? providers.get(providerName)
+    : providers.values().next().value;
+
+  if (!provider) {
+    res.status(400).json({ error: providerName ? `Provider "${providerName}" not available` : "No providers configured" });
     return;
   }
 
   // Close any existing connections to this session so we get a fresh history replay
   for (const [id, existing] of connections) {
     if (existing.sessionId === sessionId) {
-      existing.ws.close();
+      const existingProvider = providers.get(existing.provider);
+      existingProvider?.disconnect(existing.providerConn);
       for (const client of existing.sseClients) client.end();
       connections.delete(id);
       console.log(`[ws] Closed stale connection ${id.slice(0, 8)} for reconnect`);
@@ -123,23 +160,19 @@ app.post("/api/connect", async (req, res) => {
   const conn: Connection = {
     id: connectionId,
     sessionId,
-    ws: null as any,
-    token,
-    orgUuid,
+    provider: provider.name,
+    providerConn: null as any,
     sseClients: new Set(),
     lastEvent: Date.now(),
     eventBuffer: [],
   };
 
-  const ws = connectToSession(
+  const providerConn = provider.connectToSession(
     sessionId,
-    token,
-    orgUuid,
     (event) => {
       conn.lastEvent = Date.now();
       const data = `data: ${JSON.stringify(event)}\n\n`;
       if (conn.sseClients.size === 0) {
-        // Buffer events until first SSE client connects
         conn.eventBuffer.push(data);
       } else {
         for (const client of conn.sseClients) {
@@ -148,7 +181,6 @@ app.post("/api/connect", async (req, res) => {
       }
     },
     () => {
-      // On close, notify SSE clients and clean up
       for (const client of conn.sseClients) {
         client.write(`data: ${JSON.stringify({ type: "status", content: "Session disconnected", timestamp: new Date().toISOString() })}\n\n`);
         client.end();
@@ -158,11 +190,11 @@ app.post("/api/connect", async (req, res) => {
     }
   );
 
-  conn.ws = ws;
+  conn.providerConn = providerConn;
 
-  // Fetch history via REST API and prepend to buffer (before any live WS events)
+  // Fetch history and prepend to buffer (before any live events)
   try {
-    const history = await fetchSessionEvents(sessionId, token, orgUuid);
+    const history = await provider.fetchSessionEvents(sessionId);
     if (history.length > 0) {
       const historyData = history.map((e) => `data: ${JSON.stringify(e)}\n\n`);
       conn.eventBuffer = [...historyData, ...conn.eventBuffer];
@@ -173,9 +205,9 @@ app.post("/api/connect", async (req, res) => {
   }
 
   connections.set(connectionId, conn);
-  console.log(`[ws] Connection ${connectionId.slice(0, 8)} opened for session ${sessionId}`);
+  console.log(`[ws] Connection ${connectionId.slice(0, 8)} opened for session ${sessionId} (${provider.name})`);
 
-  res.json({ connectionId, status: "connected" });
+  res.json({ connectionId, status: "connected", provider: provider.name });
 });
 
 // SSE event stream
@@ -204,7 +236,7 @@ app.get("/api/sessions/:sessionId/events", (req, res) => {
 
   conn.sseClients.add(res);
 
-  // Flush any buffered events (history that arrived before SSE client connected)
+  // Flush any buffered events
   if (conn.eventBuffer.length > 0) {
     for (const data of conn.eventBuffer) {
       res.write(data);
@@ -240,8 +272,14 @@ app.post("/api/sessions/:sessionId/message", async (req, res) => {
     return;
   }
 
+  const provider = providers.get(conn.provider);
+  if (!provider) {
+    res.status(500).json({ error: `Provider "${conn.provider}" not available` });
+    return;
+  }
+
   try {
-    const result = await sendMessage(sessionId, content, conn.token, conn.orgUuid);
+    const result = await provider.sendMessage(sessionId, content, conn.providerConn);
     if (result.ok) {
       res.json({ status: "sent" });
     } else {
@@ -266,8 +304,14 @@ app.post("/api/sessions/:sessionId/control", async (req, res) => {
     return;
   }
 
+  const provider = providers.get(conn.provider);
+  if (!provider) {
+    res.status(500).json({ error: `Provider "${conn.provider}" not available` });
+    return;
+  }
+
   try {
-    const result = await sendControl(sessionId, controlType, conn.token, conn.orgUuid);
+    const result = await provider.sendControl(sessionId, controlType, conn.providerConn);
     if (result.ok) {
       res.json({ status: "sent" });
     } else {
@@ -286,7 +330,8 @@ app.delete("/api/connections/:connectionId", (req, res) => {
     return;
   }
 
-  conn.ws.close();
+  const provider = providers.get(conn.provider);
+  provider?.disconnect(conn.providerConn);
   for (const client of conn.sseClients) client.end();
   connections.delete(req.params.connectionId);
 
@@ -298,15 +343,20 @@ app.get("/api/status", (_req, res) => {
   const active = [...connections.values()].map((c) => ({
     connectionId: c.id,
     sessionId: c.sessionId,
+    provider: c.provider,
     sseClients: c.sseClients.size,
-    wsState: c.ws.readyState,
+    wsState: c.providerConn?.readyState ?? -1,
     lastEvent: new Date(c.lastEvent).toISOString(),
   }));
-  res.json({ connections: active });
+  res.json({
+    providers: [...providers.keys()],
+    connections: active,
+  });
 });
 
 // --- Start ---
-loadLocalCredentials();
+initProviders();
 app.listen(PORT, () => {
-  console.log(`\n[relay] WatchCode relay server running on http://localhost:${PORT}\n`);
+  console.log(`\n[relay] WatchCode relay server running on http://localhost:${PORT}`);
+  console.log(`[relay] Active providers: ${[...providers.keys()].join(", ") || "none"}\n`);
 });

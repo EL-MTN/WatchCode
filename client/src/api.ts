@@ -9,11 +9,11 @@ export async function fetchSessions(): Promise<SessionInfo[]> {
   return data.sessions;
 }
 
-export async function connectSession(sessionId: string): Promise<string> {
+export async function connectSession(sessionId: string, provider?: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/connect`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, provider }),
   });
   if (!res.ok) {
     const err = await res.json();

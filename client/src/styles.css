@@ -146,6 +146,19 @@ button.danger:hover { background: #dc2626; color: #fff; }
 .badge.idle { background: #422006; color: #fbbf24; }
 .badge.archived { background: #1c1c1c; color: #666; }
 
+.provider-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.provider-badge.anthropic { background: #3d2a14; color: #d4a574; }
+.provider-badge.codex { background: #0a2e21; color: #10a37f; }
+
 .events {
   flex: 1;
   overflow-y: auto;

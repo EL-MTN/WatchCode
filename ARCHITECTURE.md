@@ -2,20 +2,24 @@
 
 ## Overview
 
-WatchCode connects an Apple Watch to a running Claude Code terminal session via the Remote Control protocol. Users speak into their Watch to send prompts and see live session activity — using their existing Claude subscription with zero additional API cost.
+WatchCode connects an Apple Watch to running Claude Code and/or OpenAI Codex terminal sessions. Users speak into their Watch to send prompts and see live session activity — using their existing subscriptions with zero additional API cost.
 
-The system has two main components: a **Node.js relay server** that bridges Anthropic's WebSocket protocol to HTTP/SSE for watchOS compatibility, and a **SwiftUI Watch app** that handles voice input and event display. A **React web client** is included for testing and monitoring.
+The system has two main components: a **Node.js relay server** that bridges backend WebSocket protocols (Anthropic Remote Control and Codex App Server) to HTTP/SSE for watchOS compatibility, and a **SwiftUI Watch app** that handles voice input and event display. A **React web client** is included for testing and monitoring.
 
 ---
 
 ## System Architecture
 
 ```
-┌──────────────────┐          ┌──────────────────────┐          ┌────────────────────┐          ┌───────────────┐
-│   Claude Code    │───WS───> │   api.anthropic.com  │ <───WS───│   Relay Server     │ <──HTTP──│  Apple Watch  │
-│   (user terminal)│          │   (Anthropic relay)   │          │   (Node.js, hosted)│───SSE──> │  (SwiftUI)    │
-│                  │ <──WS─── │                       │ ───WS──> │                    │          │               │
-└──────────────────┘          └──────────────────────┘          └────────────────────┘          └───────────────┘
+┌──────────────────┐          ┌──────────────────────┐
+│   Claude Code    │───WS───> │   api.anthropic.com  │ <──WS──┐
+│   (user terminal)│ <──WS─── │   (Anthropic relay)  │ ──WS──>│
+└──────────────────┘          └──────────────────────┘         │  ┌────────────────────┐  ┌───────────────┐
+                                                               ├──│   Relay Server     │──│  Apple Watch  │
+┌──────────────────┐          ┌──────────────────────┐         │  │   (Node.js, hosted)│  │  (SwiftUI)    │
+│      Codex       │───WS───> │   Codex App Server   │ <──WS──┘  └────────────────────┘  └───────────────┘
+│   (user terminal)│ <──WS─── │   (local/remote)     │ ──WS──>        HTTP/SSE
+└──────────────────┘          └──────────────────────┘
 ```
 
 ---
@@ -24,27 +28,38 @@ The system has two main components: a **Node.js relay server** that bridges Anth
 
 ### Purpose
 
-Protocol bridge between Anthropic's WebSocket-based Remote Control API and the Apple Watch's HTTP/SSE capabilities. watchOS restricts WebSocket APIs to audio streaming apps, so the relay translates to standard HTTP which watchOS fully supports.
+Protocol bridge between backend WebSocket APIs and the Apple Watch's HTTP/SSE capabilities. watchOS restricts WebSocket APIs to audio streaming apps, so the relay translates to standard HTTP which watchOS fully supports. The relay supports multiple backends simultaneously through a **Provider** abstraction.
 
 ### Tech Stack
 
 - **Runtime:** Node.js
 - **Framework:** Express 5
-- **WebSocket client:** `ws` package (connecting to Anthropic)
+- **WebSocket client:** `ws` package (connecting to Anthropic and Codex app-server)
 - **SSE:** Native HTTP response streaming
 - **Hosting:** Any Node.js host (Railway, Fly.io, Render, VPS)
 
+### Provider Architecture
+
+The relay uses a `Provider` interface (`server/src/provider.ts`) to abstract backend differences. Each provider implements session listing, connection, messaging, control, and event transformation.
+
+| Provider | File | Backend Protocol | Credentials |
+|---|---|---|---|
+| **Anthropic** | `server/src/anthropic.ts` | WebSocket subscription + REST | `ANTHROPIC_TOKEN` (or macOS Keychain) |
+| **Codex** | `server/src/codex.ts` | JSON-RPC 2.0 over WebSocket | `CODEX_APP_SERVER_URL` (+ `WATCHCODE_SECRET` when using an authenticated proxy/tunnel) |
+
+Providers are initialized at startup based on available credentials. When both are configured, sessions from both appear in a unified list with a `provider` field.
+
 ### Authentication
 
-The relay server holds the Anthropic OAuth token server-side (via `ANTHROPIC_TOKEN` env var, or falls back to reading the macOS Keychain for local development). Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header).
+The relay server holds backend credentials server-side (Anthropic OAuth token via `ANTHROPIC_TOKEN` env var or macOS Keychain; Codex via `CODEX_APP_SERVER_URL` pointing to an already-running app-server or authenticated proxy). Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header). The relay also forwards that same header on Codex WebSocket connections when `WATCHCODE_SECRET` is configured.
 
 ### API Surface
 
-**`GET /api/sessions`** — List available Remote Control sessions from Anthropic.
+**`GET /api/sessions`** — List available sessions from all configured providers.
 
-**`POST /api/connect`** — Connect to a session. Opens a WebSocket to Anthropic, fetches event history via REST, and returns a `connectionId`.
-- Request body: `{ "sessionId": "<id>" }`
-- Response: `{ "connectionId": "<uuid>", "status": "connected" }`
+**`POST /api/connect`** — Connect to a session. Routes to the appropriate provider, opens a backend connection, fetches event history, and returns a `connectionId`.
+- Request body: `{ "sessionId": "<id>", "provider": "anthropic" | "codex" }`
+- Response: `{ "connectionId": "<uuid>", "status": "connected", "provider": "anthropic" | "codex" }`
 
 **`GET /api/sessions/:sessionId/events`** — SSE stream of session events. Flushes buffered history, then streams live events.
 - Query params: `connectionId=<uuid>`
@@ -63,32 +78,34 @@ The relay server holds the Anthropic OAuth token server-side (via `ANTHROPIC_TOK
 ### Internal Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Relay Server                                            │
-│                                                         │
-│  ┌──────────────┐    ┌──────────────┐    ┌───────────┐  │
-│  │ HTTP Router   │───>│ Connection   │───>│ WS Client │──── wss://api.anthropic.com
-│  │ (Express)     │    │ Store        │    │           │  │
-│  │               │<───│ (in-memory)  │<───│           │<─── (session events)
-│  └──────┬───────┘    └──────────────┘    └───────────┘  │
-│         │                                                │
-│  ┌──────▼───────┐    ┌──────────────┐                   │
-│  │ SSE Writer    │───>│ Event        │                   │
-│  │               │    │ Transformer  │                   │
-│  └──────────────┘    └──────────────┘                   │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Relay Server                                                         │
+│                                                                      │
+│  ┌──────────────┐    ┌──────────────┐    ┌────────────────────────┐  │
+│  │ HTTP Router   │───>│ Connection   │───>│ Provider Registry      │  │
+│  │ (Express)     │    │ Store        │    │                        │  │
+│  │               │<───│ (in-memory)  │    │  ┌──────────────────┐  │  │
+│  └──────┬───────┘    └──────────────┘    │  │ AnthropicProvider │──── wss://api.anthropic.com
+│         │                                │  └──────────────────┘  │  │
+│  ┌──────▼───────┐                        │  ┌──────────────────┐  │  │
+│  │ SSE Writer    │                        │  │ CodexProvider    │──── ws://app-server
+│  │               │                        │  └──────────────────┘  │  │
+│  └──────────────┘                        └────────────────────────┘  │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Connection Store:** In-memory map of `connectionId → { ws, sessionId, sseClients[], eventBuffer[] }`. When connecting, any existing connection to the same session is closed first to get a fresh history replay.
+**Provider Registry:** Maps provider names to `Provider` instances. Each provider encapsulates its own credentials, connection logic, and event transformation. Providers are initialized at startup based on environment variables.
 
-**Event Transformer:** Converts raw Anthropic session events into simplified payloads for the Watch. Strips markdown, summarizes verbose tool outputs (file contents, bash output), and provides human-readable tool input descriptions.
+**Connection Store:** In-memory map of `connectionId → { provider, providerConn, sessionId, sseClients[], eventBuffer[] }`. When connecting, any existing connection to the same session is closed first to get a fresh history replay.
 
-**Event Buffer:** Events arriving before an SSE client connects are buffered. On first SSE connection, historical events (fetched via REST) and buffered live events are flushed immediately.
+**Event Transformer:** Each provider converts its raw backend events into simplified `WatchEvent` payloads. Strips markdown, summarizes verbose tool outputs, and provides human-readable tool input descriptions. The Anthropic provider handles Claude Code tools (Bash, Read, Write, etc.); the Codex provider handles Codex tools (shell, read_file, apply_diff, etc.).
+
+**Event Buffer:** Events arriving before an SSE client connects are buffered. On first SSE connection, historical events and buffered live events are flushed immediately.
 
 ### Security
 
-- **Server-side credentials.** The OAuth token is stored on the relay, not sent by clients.
+- **Server-side credentials.** Backend tokens and URLs are stored on the relay, not sent by clients.
 - **Shared secret auth.** All `/api` endpoints require the `x-watchcode-secret` header when configured.
 - **TLS required in production.** Deploy behind HTTPS to protect the shared secret in transit.
 - **Connection scoping.** Each `connectionId` is a UUID tied to a specific session.

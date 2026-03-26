@@ -20,6 +20,7 @@ export function App() {
   const [state, setState] = useState<ConnectionState>("disconnected");
   const [events, setEvents] = useState<WatchEvent[]>([]);
   const [inputValue, setInputValue] = useState("");
+  const [provider, setProvider] = useState<string | undefined>();
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const addEvent = useCallback((event: WatchEvent) => {
@@ -27,7 +28,7 @@ export function App() {
   }, []);
 
   const connect = useCallback(
-    async (id?: string) => {
+    async (id?: string, prov?: string) => {
       const sid = id || inputValue.trim();
       if (!sid) return;
 
@@ -37,10 +38,11 @@ export function App() {
         : sid;
 
       setSessionId(parsed);
+      setProvider(prov);
       setState("connecting");
 
       try {
-        const connId = await connectSession(parsed);
+        const connId = await connectSession(parsed, prov);
         setConnectionId(connId);
 
         const es = subscribeToEvents(parsed, connId);
@@ -71,6 +73,7 @@ export function App() {
     eventSourceRef.current = null;
     if (connectionId) disconnectSession(connectionId);
     setConnectionId(null);
+    setProvider(undefined);
     setState("disconnected");
   }, [connectionId]);
 
@@ -140,9 +143,9 @@ export function App() {
         )}
       </div>
 
-      {!connected && <SessionList onSelect={(id) => connect(id)} />}
+      {!connected && <SessionList onSelect={(id, prov) => connect(id, prov)} />}
 
-      <EventFeed events={events} />
+      <EventFeed events={events} provider={provider} />
 
       <MessageInput
         disabled={!connected}

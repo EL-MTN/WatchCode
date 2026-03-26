@@ -19,7 +19,7 @@ struct SettingsView: View {
             } header: {
                 Text("Relay Server")
             } footer: {
-                Text("The relay server URL that bridges Claude Code sessions to this app.")
+                Text("The relay server URL that bridges coding agent sessions to this app.")
                     .font(.system(size: 9))
             }
 

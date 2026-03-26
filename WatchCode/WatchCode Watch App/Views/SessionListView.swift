@@ -26,7 +26,7 @@ struct SessionListView: View {
                     Text("No Sessions")
                         .font(.caption)
                         .fontWeight(.medium)
-                    Text("Run Claude Code with the relay server to see sessions here.")
+                    Text("Run a coding agent with the relay server to see sessions here.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -38,7 +38,7 @@ struct SessionListView: View {
                 if !liveSessions.isEmpty {
                     Section {
                         ForEach(liveSessions) { session in
-                            NavigationLink(destination: SessionView(sessionId: session.id)) {
+                            NavigationLink(destination: SessionView(sessionId: session.id, provider: session.provider)) {
                                 SessionRow(session: session)
                             }
                         }
@@ -53,7 +53,7 @@ struct SessionListView: View {
                 if !archivedSessions.isEmpty {
                     Section {
                         ForEach(archivedSessions.prefix(10)) { session in
-                            NavigationLink(destination: SessionView(sessionId: session.id)) {
+                            NavigationLink(destination: SessionView(sessionId: session.id, provider: session.provider)) {
                                 SessionRow(session: session)
                             }
                         }
@@ -112,6 +112,12 @@ struct SessionRow: View {
 
             HStack(spacing: 6) {
                 StatusBadge(status: session.status)
+
+                if let provider = session.provider {
+                    Text(provider == "codex" ? "CODEX" : "CLAUDE")
+                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .foregroundStyle(provider == "codex" ? .green : .orange)
+                }
 
                 Text(session.model)
                     .font(.system(size: 9))

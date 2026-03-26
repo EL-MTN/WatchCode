@@ -1,32 +1,35 @@
 import { useEffect, useRef } from "react";
 import type { WatchEvent } from "../types";
 
-const LABELS: Record<string, string> = {
-  user: "YOU",
-  assistant: "CLAUDE",
-  tool_use: "TOOL",
-  tool_result: "RESULT",
-  status: "STATUS",
-  error: "ERROR",
-  raw: "RAW",
-};
-
 interface Props {
   events: WatchEvent[];
+  provider?: string;
 }
 
-export function EventFeed({ events }: Props) {
+export function EventFeed({ events, provider }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events.length]);
 
+  const assistantLabel = provider === "codex" ? "CODEX" : "CLAUDE";
+
+  const labels: Record<string, string> = {
+    user: "YOU",
+    assistant: assistantLabel,
+    tool_use: "TOOL",
+    tool_result: "RESULT",
+    status: "STATUS",
+    error: "ERROR",
+    raw: "RAW",
+  };
+
   if (events.length === 0) {
     return (
       <div className="empty-state">
         <p>
-          Select a session above or run <code>/rc</code> in Claude Code.
+          Select a session above or start a coding agent.
         </p>
       </div>
     );
@@ -39,7 +42,7 @@ export function EventFeed({ events }: Props) {
           <span className="time">
             {new Date(event.timestamp).toLocaleTimeString()}
           </span>
-          <span className="label">{LABELS[event.type] || event.type}</span>
+          <span className="label">{labels[event.type] || event.type}</span>
           {event.content}
           {event.detail && <span className="detail">{event.detail}</span>}
         </div>
