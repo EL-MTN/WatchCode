@@ -404,7 +404,7 @@ export class CodexProvider implements Provider {
         const itemType = item?.type;
         const itemId = item?.id || item?.itemId || "unknown";
 
-        if (itemType === "message" || item?.role === "assistant") {
+        if (itemType === "message" && item?.role === "assistant") {
           // Use accumulated delta buffer if available, otherwise extract from item
           let text = deltaBuffers.get(itemId) || "";
           deltaBuffers.delete(itemId);
