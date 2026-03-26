@@ -16,7 +16,7 @@ function badgeClass(status: string): string {
 }
 
 interface Props {
-  onSelect: (sessionId: string) => void;
+  onSelect: (sessionId: string, provider?: string) => void;
 }
 
 export function SessionList({ onSelect }: Props) {
@@ -58,7 +58,7 @@ export function SessionList({ onSelect }: Props) {
         )}
         {!loading && !error && sessions.length === 0 && (
           <div style={{ color: "#555", fontSize: 12, padding: 4 }}>
-            No sessions found. Run /rc in Claude Code.
+            No sessions found. Start a coding agent to see sessions here.
           </div>
         )}
 
@@ -89,16 +89,21 @@ function SessionCard({
   onSelect,
 }: {
   session: SessionInfo;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, provider?: string) => void;
 }) {
   return (
-    <div className="session-card" onClick={() => onSelect(s.id)}>
+    <div className="session-card" onClick={() => onSelect(s.id, s.provider)}>
       <div className="title">
         {s.title}
         <span className={`badge ${badgeClass(s.status)}`}>{s.status.toUpperCase()}</span>
       </div>
       <div className="meta">
         <span className="model">{s.model}</span>
+        {s.provider && (
+          <span className={`provider-badge ${s.provider}`}>
+            {s.provider === "codex" ? "CODEX" : "CLAUDE"}
+          </span>
+        )}
         <br />
         {timeAgo(s.updatedAt)}
       </div>

@@ -23,6 +23,7 @@ class RelayClient {
 
     private var connectionId: String?
     private var currentSessionId: String?
+    var currentProvider: String?
     private var streamTask: Task<Void, Never>?
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 3
@@ -59,9 +60,10 @@ class RelayClient {
 
     // MARK: - Connection
 
-    func connect(sessionId: String) async {
+    func connect(sessionId: String, provider: String? = nil) async {
         connectionState = .connecting
         currentSessionId = sessionId
+        currentProvider = provider
         events = []
         reconnectAttempts = 0
 
@@ -74,7 +76,7 @@ class RelayClient {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             applyAuth(&request)
-            request.httpBody = try JSONEncoder().encode(ConnectRequest(sessionId: sessionId))
+            request.httpBody = try JSONEncoder().encode(ConnectRequest(sessionId: sessionId, provider: currentProvider))
 
             let (data, _) = try await URLSession.shared.data(for: request)
             let response = try JSONDecoder().decode(ConnectResponse.self, from: data)
@@ -194,6 +196,7 @@ private struct SessionsResponse: Codable {
 
 private struct ConnectRequest: Codable {
     let sessionId: String
+    let provider: String?
 }
 
 private struct ConnectResponse: Codable {

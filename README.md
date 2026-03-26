@@ -5,28 +5,33 @@
 <h1 align="center">WatchCode</h1>
 
 <p align="center">
-  Control Claude Code from your Apple Watch.<br>
+  Control Claude Code and OpenAI Codex from your Apple Watch.<br>
   Speak prompts, see live activity, interrupt tasks — so you can touch grass while shipping code.
 </p>
 
 <p align="center">
-  Uses your existing Claude subscription with zero additional API cost.
+  Uses your existing subscriptions with zero additional API cost.
 </p>
 
 ---
 
 ```
-┌──────────────┐         ┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│  Claude Code │──WS───> │  Anthropic   │ <──WS── │ Relay Server │ <─HTTP─ │ Apple Watch │
-│  (terminal)  │ <──WS── │  (relay API) │ ──WS──> │  (Node.js)   │ ──SSE─> │  (SwiftUI)  │
-└──────────────┘         └─────────────┘         └──────────────┘         └─────────────┘
+┌──────────────┐         ┌─────────────┐
+│  Claude Code │──WS───> │  Anthropic   │ <──WS──┐
+│  (terminal)  │ <──WS── │  (relay API) │ ──WS──>│
+└──────────────┘         └─────────────┘         │    ┌──────────────┐         ┌─────────────┐
+                                                 ├───>│ Relay Server │ <─HTTP─ │ Apple Watch │
+┌──────────────┐         ┌─────────────┐         │    │  (Node.js)   │ ──SSE─> │  (SwiftUI)  │
+│    Codex     │──WS───> │  Codex App  │ <──WS──┘    └──────────────┘         └─────────────┘
+│  (terminal)  │ <──WS── │   Server    │ ──WS──>
+└──────────────┘         └─────────────┘
 ```
 
-> **Why a relay?** watchOS restricts WebSocket APIs to audio streaming apps only. The relay bridges Anthropic's WebSocket protocol to standard HTTP/SSE, which watchOS fully supports.
+> **Why a relay?** watchOS restricts WebSocket APIs to audio streaming apps only. The relay bridges backend WebSocket protocols to standard HTTP/SSE, which watchOS fully supports.
 
 ## How It Works
 
-WatchCode bridges Claude Code's [Remote Control](https://docs.anthropic.com/en/docs/claude-code/remote-control) WebSocket protocol to HTTP/SSE so watchOS can consume it. The relay server connects to Anthropic's API on behalf of the Watch, transforms raw session events into a compact format, and streams them over SSE.
+WatchCode bridges Claude Code's [Remote Control](https://docs.anthropic.com/en/docs/claude-code/remote-control) and OpenAI Codex's [App Server](https://developers.openai.com/codex/app-server) protocols to HTTP/SSE so watchOS can consume them. The relay server connects to one or both backends, transforms raw session events into a compact format, and streams them over SSE. Sessions from both providers appear in a unified list.
 
 **The Watch app provides:**
 - Voice dictation to send prompts
@@ -47,7 +52,7 @@ WatchCode bridges Claude Code's [Remote Control](https://docs.anthropic.com/en/d
 ### Prerequisites
 
 - Node.js 20+
-- An active [Claude](https://claude.ai) subscription with Claude Code
+- An active [Claude](https://claude.ai) subscription with Claude Code and/or [OpenAI Codex](https://openai.com/index/introducing-codex/) CLI
 - Xcode 26+ (for the Watch app)
 - An Apple Watch running watchOS 26+
 
@@ -67,12 +72,18 @@ ANTHROPIC_TOKEN=your_token_here
 # Optional: your Anthropic org UUID (run: claude auth status)
 ANTHROPIC_ORG_UUID=
 
+# Codex app-server WebSocket URL (run: codex app-server --listen ws://127.0.0.1:4500)
+# Leave empty to disable Codex provider
+CODEX_APP_SERVER_URL=ws://127.0.0.1:4500
+
 # Shared secret for Watch app auth (generate: openssl rand -hex 32)
 WATCHCODE_SECRET=
 
 # Server port
 PORT=3847
 ```
+
+> **Note:** At least one provider must be configured. You can enable just Claude Code, just Codex, or both.
 
 ```bash
 # Development (with hot reload)
@@ -103,8 +114,9 @@ The relay server can be deployed to any Node.js host (Railway, Fly.io, Render, e
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_TOKEN` | Yes | Your Anthropic OAuth token |
+| `ANTHROPIC_TOKEN` | For Claude | Your Anthropic OAuth token |
 | `ANTHROPIC_ORG_UUID` | No | Anthropic organization UUID |
+| `CODEX_APP_SERVER_URL` | For Codex | Codex app-server WebSocket URL |
 | `WATCHCODE_SECRET` | Recommended | Shared secret for request authentication |
 | `PORT` | No | Server port (default: 3847) |
 

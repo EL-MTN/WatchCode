@@ -1,12 +1,11 @@
 import type { Response } from "express";
-import type { WebSocket } from "ws";
+import type { ProviderName, ProviderConnection } from "./provider.js";
 
 export interface Connection {
   id: string;
   sessionId: string;
-  ws: WebSocket;
-  token: string;
-  orgUuid: string;
+  provider: ProviderName;
+  providerConn: ProviderConnection;
   sseClients: Set<Response>;
   lastEvent: number;
   eventBuffer: string[];
@@ -27,5 +26,5 @@ export interface SendMessageBody {
 
 export interface ConnectBody {
   sessionId: string;
-  orgUuid?: string;
+  provider?: ProviderName;
 }

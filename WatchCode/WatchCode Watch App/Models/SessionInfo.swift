@@ -8,4 +8,5 @@ struct SessionInfo: Codable, Identifiable {
     let environmentId: String
     let createdAt: String
     let updatedAt: String
+    let provider: String?
 }

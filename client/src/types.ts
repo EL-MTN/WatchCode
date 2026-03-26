@@ -6,6 +6,7 @@ export interface SessionInfo {
   environmentId: string;
   createdAt: string;
   updatedAt: string;
+  provider?: "anthropic" | "codex";
 }
 
 export interface WatchEvent {

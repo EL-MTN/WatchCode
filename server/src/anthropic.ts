@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import type { WatchEvent } from "./types.js";
+import type { Provider, ProviderConnection, SessionInfo, ApiResult } from "./provider.js";
 
 const API_BASE = "https://api.anthropic.com";
 const HEADERS = {
@@ -7,211 +8,208 @@ const HEADERS = {
   "anthropic-beta": "ccr-byoc-2025-07-29",
 };
 
-export interface SessionInfo {
-  id: string;
-  title: string;
-  status: string;
-  model: string;
-  environmentId: string;
-  createdAt: string;
-  updatedAt: string;
+// ─── Provider Connection wrapper ─────────────────────────────────────
+
+class AnthropicConnection implements ProviderConnection {
+  constructor(public handle: WebSocket) {}
+  get readyState(): number {
+    return this.handle.readyState;
+  }
 }
 
-export async function listSessions(
-  token: string,
-  orgUuid: string
-): Promise<SessionInfo[]> {
-  const params = new URLSearchParams();
-  if (orgUuid) params.set("organization_uuid", orgUuid);
+// ─── Provider implementation ─────────────────────────────────────────
 
-  const url = `${API_BASE}/v1/sessions${params.toString() ? `?${params}` : ""}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...HEADERS,
-      ...(orgUuid ? { "x-organization-uuid": orgUuid } : {}),
-    },
-  });
+export class AnthropicProvider implements Provider {
+  readonly name = "anthropic" as const;
+  private token: string;
+  private orgUuid: string;
 
-  if (!res.ok) {
-    throw new Error(`Failed to list sessions: ${res.status}`);
+  constructor(token: string, orgUuid: string) {
+    this.token = token;
+    this.orgUuid = orgUuid;
   }
 
-  const data = await res.json();
-  const sessions: SessionInfo[] = (data.data || []).map((s: any) => ({
-    id: s.id,
-    title: s.title || "Untitled",
-    status: s.session_status,
-    model: s.session_context?.model || "unknown",
-    environmentId: s.environment_id || "",
-    createdAt: s.created_at,
-    updatedAt: s.updated_at,
-  }));
-
-  // Sort: running first, then idle, then archived. Within each group, most recent first.
-  const priority: Record<string, number> = { running: 0, active: 0, idle: 1, archived: 2 };
-  sessions.sort((a, b) => {
-    const pa = priority[a.status] ?? 2;
-    const pb = priority[b.status] ?? 2;
-    if (pa !== pb) return pa - pb;
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-  });
-
-  return sessions;
-}
-
-export function connectToSession(
-  sessionId: string,
-  token: string,
-  orgUuid: string,
-  onEvent: (event: WatchEvent) => void,
-  onClose: () => void
-): WebSocket {
-  const params = orgUuid ? `?organization_uuid=${orgUuid}` : "";
-  const url = `wss://api.anthropic.com/v1/sessions/ws/${sessionId}/subscribe${params}`;
-
-  const ws = new WebSocket(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
+  private authHeaders(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.token}`,
       ...HEADERS,
-    },
-  });
+      ...(this.orgUuid ? { "x-organization-uuid": this.orgUuid } : {}),
+    };
+  }
 
-  ws.on("open", () => {
-    onEvent({
-      type: "status",
-      content: "Connected to Remote Control session",
-      timestamp: new Date().toISOString(),
+  async listSessions(): Promise<SessionInfo[]> {
+    const params = new URLSearchParams();
+    if (this.orgUuid) params.set("organization_uuid", this.orgUuid);
+
+    const url = `${API_BASE}/v1/sessions${params.toString() ? `?${params}` : ""}`;
+    const res = await fetch(url, { headers: this.authHeaders() });
+
+    if (!res.ok) {
+      throw new Error(`Failed to list sessions: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const sessions: SessionInfo[] = (data.data || []).map((s: any) => ({
+      id: s.id,
+      title: s.title || "Untitled",
+      status: s.session_status,
+      model: s.session_context?.model || "unknown",
+      environmentId: s.environment_id || "",
+      createdAt: s.created_at,
+      updatedAt: s.updated_at,
+      provider: "anthropic" as const,
+    }));
+
+    const priority: Record<string, number> = { running: 0, active: 0, idle: 1, archived: 2 };
+    sessions.sort((a, b) => {
+      const pa = priority[a.status] ?? 2;
+      const pb = priority[b.status] ?? 2;
+      if (pa !== pb) return pa - pb;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
-  });
 
-  ws.on("message", (data) => {
-    try {
-      const raw = JSON.parse(data.toString());
-      const events = transformEvent(raw);
-      for (const event of events) {
-        onEvent(event);
-      }
-    } catch {
+    return sessions;
+  }
+
+  connectToSession(
+    sessionId: string,
+    onEvent: (event: WatchEvent) => void,
+    onClose: () => void
+  ): ProviderConnection {
+    const params = this.orgUuid ? `?organization_uuid=${this.orgUuid}` : "";
+    const url = `wss://api.anthropic.com/v1/sessions/ws/${sessionId}/subscribe${params}`;
+
+    const ws = new WebSocket(url, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        ...HEADERS,
+      },
+    });
+
+    ws.on("open", () => {
       onEvent({
-        type: "raw",
-        content: data.toString().slice(0, 500),
+        type: "status",
+        content: "Connected to Remote Control session",
         timestamp: new Date().toISOString(),
       });
-    }
-  });
-
-  ws.on("error", (err) => {
-    onEvent({
-      type: "error",
-      content: err.message,
-      timestamp: new Date().toISOString(),
     });
-  });
 
-  ws.on("close", (code, reason) => {
-    onEvent({
-      type: "status",
-      content: `Disconnected (code: ${code})`,
-      detail: reason.toString() || undefined,
-      timestamp: new Date().toISOString(),
+    ws.on("message", (data) => {
+      try {
+        const raw = JSON.parse(data.toString());
+        const events = transformEvent(raw);
+        for (const event of events) {
+          onEvent(event);
+        }
+      } catch {
+        onEvent({
+          type: "raw",
+          content: data.toString().slice(0, 500),
+          timestamp: new Date().toISOString(),
+        });
+      }
     });
-    onClose();
-  });
 
-  return ws;
-}
+    ws.on("error", (err) => {
+      onEvent({
+        type: "error",
+        content: err.message,
+        timestamp: new Date().toISOString(),
+      });
+    });
 
-export async function sendMessage(
-  sessionId: string,
-  content: string,
-  token: string,
-  orgUuid: string
-): Promise<{ ok: boolean; status: number; body: string }> {
-  const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
-  const eventId = crypto.randomUUID();
+    ws.on("close", (code, reason) => {
+      onEvent({
+        type: "status",
+        content: `Disconnected (code: ${code})`,
+        detail: reason.toString() || undefined,
+        timestamp: new Date().toISOString(),
+      });
+      onClose();
+    });
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...HEADERS,
-      ...(orgUuid ? { "x-organization-uuid": orgUuid } : {}),
-    },
-    body: JSON.stringify({
-      events: [
-        {
-          uuid: eventId,
-          session_id: sessionId,
-          type: "user",
-          parent_tool_use_id: null,
-          message: { role: "user", content },
-        },
-      ],
-    }),
-  });
-
-  const body = await res.text();
-  return { ok: res.ok, status: res.status, body };
-}
-
-export async function sendControl(
-  sessionId: string,
-  controlType: string,
-  token: string,
-  orgUuid: string
-): Promise<{ ok: boolean; status: number; body: string }> {
-  const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
-  const eventId = crypto.randomUUID();
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...HEADERS,
-      ...(orgUuid ? { "x-organization-uuid": orgUuid } : {}),
-    },
-    body: JSON.stringify({
-      events: [
-        {
-          uuid: eventId,
-          session_id: sessionId,
-          type: "control",
-          data: { type: controlType },
-        },
-      ],
-    }),
-  });
-
-  const body = await res.text();
-  return { ok: res.ok, status: res.status, body };
-}
-
-export async function fetchSessionEvents(
-  sessionId: string,
-  token: string,
-  orgUuid: string
-): Promise<WatchEvent[]> {
-  const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...HEADERS,
-      ...(orgUuid ? { "x-organization-uuid": orgUuid } : {}),
-    },
-  });
-
-  if (!res.ok) return [];
-
-  const data = await res.json();
-  const rawEvents = Array.isArray(data) ? data : data.data || [];
-  const events: WatchEvent[] = [];
-  for (const raw of rawEvents) {
-    events.push(...transformEvent(raw));
+    return new AnthropicConnection(ws);
   }
-  return events;
+
+  async sendMessage(
+    sessionId: string,
+    content: string,
+    _conn: ProviderConnection
+  ): Promise<ApiResult> {
+    const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
+    const eventId = crypto.randomUUID();
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        events: [
+          {
+            uuid: eventId,
+            session_id: sessionId,
+            type: "user",
+            parent_tool_use_id: null,
+            message: { role: "user", content },
+          },
+        ],
+      }),
+    });
+
+    const body = await res.text();
+    return { ok: res.ok, status: res.status, body };
+  }
+
+  async sendControl(
+    sessionId: string,
+    controlType: string,
+    _conn: ProviderConnection
+  ): Promise<ApiResult> {
+    const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
+    const eventId = crypto.randomUUID();
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        events: [
+          {
+            uuid: eventId,
+            session_id: sessionId,
+            type: "control",
+            data: { type: controlType },
+          },
+        ],
+      }),
+    });
+
+    const body = await res.text();
+    return { ok: res.ok, status: res.status, body };
+  }
+
+  async fetchSessionEvents(sessionId: string): Promise<WatchEvent[]> {
+    const url = `${API_BASE}/v1/sessions/${sessionId}/events`;
+    const res = await fetch(url, { headers: this.authHeaders() });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const rawEvents = Array.isArray(data) ? data : data.data || [];
+    const events: WatchEvent[] = [];
+    for (const raw of rawEvents) {
+      events.push(...transformEvent(raw));
+    }
+    return events;
+  }
+
+  disconnect(conn: ProviderConnection): void {
+    (conn.handle as WebSocket).close();
+  }
 }
 
 // ─── Helpers for watch-friendly summaries ───────────────────────────
