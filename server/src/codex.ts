@@ -72,7 +72,7 @@ class CodexConnection implements ProviderConnection {
 
 async function openAndInit(url: string): Promise<{ ws: WebSocket; rpc: JsonRpcClient }> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = createCodexWebSocket(url);
     const timeout = setTimeout(() => {
       ws.close();
       reject(new Error("Codex app-server connection timed out"));
@@ -98,6 +98,13 @@ async function openAndInit(url: string): Promise<{ ws: WebSocket; rpc: JsonRpcCl
       clearTimeout(timeout);
       reject(err);
     });
+  });
+}
+
+function createCodexWebSocket(url: string): WebSocket {
+  const secret = process.env.WATCHCODE_SECRET || "";
+  return new WebSocket(url, {
+    headers: secret ? { "x-watchcode-secret": secret } : undefined,
   });
 }
 
@@ -223,7 +230,7 @@ export class CodexProvider implements Provider {
     onEvent: (event: WatchEvent) => void,
     onClose: () => void
   ): ProviderConnection {
-    const ws = new WebSocket(this.appServerUrl);
+    const ws = createCodexWebSocket(this.appServerUrl);
     const rpc = new JsonRpcClient(ws);
 
     // Track streaming deltas per item for accumulation

@@ -45,13 +45,13 @@ The relay uses a `Provider` interface (`server/src/provider.ts`) to abstract bac
 | Provider | File | Backend Protocol | Credentials |
 |---|---|---|---|
 | **Anthropic** | `server/src/anthropic.ts` | WebSocket subscription + REST | `ANTHROPIC_TOKEN` (or macOS Keychain) |
-| **Codex** | `server/src/codex.ts` | JSON-RPC 2.0 over WebSocket | `CODEX_APP_SERVER_URL` |
+| **Codex** | `server/src/codex.ts` | JSON-RPC 2.0 over WebSocket | `CODEX_APP_SERVER_URL` (+ `WATCHCODE_SECRET` when using an authenticated proxy/tunnel) |
 
 Providers are initialized at startup based on available credentials. When both are configured, sessions from both appear in a unified list with a `provider` field.
 
 ### Authentication
 
-The relay server holds backend credentials server-side (Anthropic OAuth token via `ANTHROPIC_TOKEN` env var or macOS Keychain; Codex via `CODEX_APP_SERVER_URL` pointing to an already-running app-server). Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header).
+The relay server holds backend credentials server-side (Anthropic OAuth token via `ANTHROPIC_TOKEN` env var or macOS Keychain; Codex via `CODEX_APP_SERVER_URL` pointing to an already-running app-server or authenticated proxy). Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header). The relay also forwards that same header on Codex WebSocket connections when `WATCHCODE_SECRET` is configured.
 
 ### API Surface
 

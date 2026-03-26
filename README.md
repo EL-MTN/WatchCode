@@ -73,10 +73,12 @@ ANTHROPIC_TOKEN=your_token_here
 ANTHROPIC_ORG_UUID=
 
 # Codex app-server WebSocket URL (run: codex app-server --listen ws://127.0.0.1:4500)
+# Can also be a remote authenticated proxy/tunnel URL that forwards to a local Codex instance
 # Leave empty to disable Codex provider
 CODEX_APP_SERVER_URL=ws://127.0.0.1:4500
 
-# Shared secret for Watch app auth (generate: openssl rand -hex 32)
+# Shared secret for Watch app auth and Codex upstream WebSocket auth
+# when connecting to Codex through an authenticated proxy/tunnel
 WATCHCODE_SECRET=
 
 # Server port
@@ -116,8 +118,8 @@ The relay server can be deployed to any Node.js host (Railway, Fly.io, Render, e
 |----------|----------|-------------|
 | `ANTHROPIC_TOKEN` | For Claude | Your Anthropic OAuth token |
 | `ANTHROPIC_ORG_UUID` | No | Anthropic organization UUID |
-| `CODEX_APP_SERVER_URL` | For Codex | Codex app-server WebSocket URL |
-| `WATCHCODE_SECRET` | Recommended | Shared secret for request authentication |
+| `CODEX_APP_SERVER_URL` | For Codex | Codex app-server WebSocket URL or authenticated proxy/tunnel URL |
+| `WATCHCODE_SECRET` | Recommended | Shared secret for relay API auth and Codex upstream WebSocket auth |
 | `PORT` | No | Server port (default: 3847) |
 
 When no `WATCHCODE_SECRET` is set, the relay runs in open mode (suitable for local development only).
@@ -140,6 +142,7 @@ All endpoints require the `x-watchcode-secret` header when `WATCHCODE_SECRET` is
 
 - **No credential storage.** OAuth tokens are passed through and never written to disk by the relay.
 - **Shared secret auth.** The `WATCHCODE_SECRET` prevents unauthorized access to your relay.
+- **Codex upstream auth.** When `CODEX_APP_SERVER_URL` points to an authenticated proxy/tunnel, the relay also sends `x-watchcode-secret: <WATCHCODE_SECRET>` on the upstream Codex WebSocket connection.
 - **TLS required in production.** Deploy behind HTTPS to protect tokens in transit.
 
 ## Architecture
