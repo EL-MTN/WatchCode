@@ -61,8 +61,15 @@ cp server/.env.example server/.env
 Edit `server/.env`:
 
 ```env
-# Get your OAuth token by running: claude oauth-token
-ANTHROPIC_TOKEN=your_token_here
+# Anthropic OAuth refresh token (recommended — auto-refreshes the access token)
+# Extract from Keychain:
+#   security find-generic-password -s "Claude Code-credentials" -w \
+#     | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['claudeAiOauth']['refreshToken'])"
+ANTHROPIC_REFRESH_TOKEN=
+
+# Or provide a short-lived access token directly (expires in ~10 hours)
+# Run: claude oauth-token
+ANTHROPIC_TOKEN=
 
 # Optional: your Anthropic org UUID (run: claude auth status)
 ANTHROPIC_ORG_UUID=
@@ -94,6 +101,17 @@ npm run build && npm start
 A browser-based interface to the relay for testing and monitoring.
 
 ```bash
+cp client/.env.example client/.env
+```
+
+Edit `client/.env`:
+
+```env
+# Must match the WATCHCODE_SECRET on the server
+VITE_WATCHCODE_SECRET=your_secret_here
+```
+
+```bash
 npm run dev:client
 ```
 
@@ -103,7 +121,8 @@ The relay server can be deployed to any Node.js host (Railway, Fly.io, Render, e
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_TOKEN` | Yes | Your Anthropic OAuth token |
+| `ANTHROPIC_REFRESH_TOKEN` | Recommended | Long-lived OAuth refresh token (auto-refreshes access tokens) |
+| `ANTHROPIC_TOKEN` | Fallback | Short-lived OAuth access token (expires in ~10 hours) |
 | `ANTHROPIC_ORG_UUID` | No | Anthropic organization UUID |
 | `WATCHCODE_SECRET` | Recommended | Shared secret for request authentication |
 | `PORT` | No | Server port (default: 3847) |
@@ -126,7 +145,8 @@ All endpoints require the `x-watchcode-secret` header when `WATCHCODE_SECRET` is
 
 ## Security
 
-- **No credential storage.** OAuth tokens are passed through and never written to disk by the relay.
+- **Automatic token refresh.** When `ANTHROPIC_REFRESH_TOKEN` is set, the server refreshes access tokens automatically before they expire.
+- **No credential storage.** OAuth tokens are kept in memory and never written to disk by the relay.
 - **Shared secret auth.** The `WATCHCODE_SECRET` prevents unauthorized access to your relay.
 - **TLS required in production.** Deploy behind HTTPS to protect tokens in transit.
 
