@@ -21,6 +21,7 @@ app.use((_req, res, next) => {
 app.use("/api", (req, res, next) => {
   if (!WATCHCODE_SECRET) return next(); // no secret configured = open (local dev)
   if (req.headers["x-watchcode-secret"] === WATCHCODE_SECRET) return next();
+  if (req.query.secret === WATCHCODE_SECRET) return next(); // EventSource can't send headers
   res.status(401).json({ error: "Unauthorized" });
 });
 
@@ -30,11 +31,75 @@ const connections = new Map<string, Connection>();
 // --- Credentials: env vars (production) or Keychain (local dev) ---
 let localToken: string | null = process.env.ANTHROPIC_TOKEN || null;
 let localOrgUuid: string | null = process.env.ANTHROPIC_ORG_UUID || null;
+let refreshToken: string | null = process.env.ANTHROPIC_REFRESH_TOKEN || null;
+let tokenExpiresAt: number | null = null; // ms timestamp
+
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OAUTH_SCOPES = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+
+async function refreshAccessToken(): Promise<boolean> {
+  if (!refreshToken) return false;
+
+  console.log("[auth] Refreshing OAuth access token...");
+  try {
+    const res = await fetch("https://platform.claude.com/v1/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+        scope: OAUTH_SCOPES,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`[auth] Refresh failed (${res.status}): ${body}`);
+      return false;
+    }
+
+    const data = await res.json();
+    localToken = data.access_token;
+    if (data.refresh_token) refreshToken = data.refresh_token;
+    tokenExpiresAt = Date.now() + data.expires_in * 1000;
+    localOrgUuid = data.organization?.uuid || localOrgUuid;
+
+    console.log(`[auth] Token refreshed, expires in ${data.expires_in}s`);
+    return true;
+  } catch (err: any) {
+    console.error(`[auth] Refresh error: ${err.message}`);
+    return false;
+  }
+}
+
+async function ensureFreshToken(): Promise<void> {
+  if (!refreshToken || !tokenExpiresAt) return;
+  if (Date.now() < tokenExpiresAt - TOKEN_REFRESH_BUFFER_MS) return;
+  await refreshAccessToken();
+}
 
 function loadLocalCredentials() {
-  // If env vars are set, skip Keychain entirely
+  // If refresh token is available, do an initial refresh to get a valid access token
+  if (refreshToken) {
+    console.log("[auth] Refresh token configured — will refresh on startup");
+    if (localToken) {
+      // Treat the provided access token as potentially expired; set a short expiry to trigger refresh
+      tokenExpiresAt = Date.now() + 60_000;
+      console.log("[auth] Access token loaded from env (will refresh soon)");
+    } else {
+      // No access token at all, force immediate refresh
+      tokenExpiresAt = 0;
+    }
+    if (localOrgUuid) console.log(`[auth] Org UUID from env: ${localOrgUuid}`);
+    return;
+  }
+
+  // If only access token is set (no refresh), use it as-is
   if (localToken) {
-    console.log("[auth] Token loaded from ANTHROPIC_TOKEN env var");
+    console.log("[auth] Token loaded from ANTHROPIC_TOKEN env var (no refresh token — will expire)");
     if (localOrgUuid) console.log(`[auth] Org UUID from env: ${localOrgUuid}`);
     return;
   }
@@ -47,7 +112,11 @@ function loadLocalCredentials() {
     ).trim();
     const creds = JSON.parse(raw);
     localToken = creds.claudeAiOauth?.accessToken || null;
+    refreshToken = creds.claudeAiOauth?.refreshToken || null;
+    const expiresAt = creds.claudeAiOauth?.expiresAt;
+    if (expiresAt) tokenExpiresAt = Number(expiresAt);
     if (localToken) console.log("[auth] OAuth token loaded from Keychain");
+    if (refreshToken) console.log("[auth] Refresh token loaded from Keychain");
   } catch {
     console.log("[auth] Could not read Keychain — use Authorization header or set ANTHROPIC_TOKEN");
   }
@@ -63,9 +132,10 @@ function loadLocalCredentials() {
   }
 }
 
-function getToken(req: express.Request): string | null {
+async function getToken(req: express.Request): Promise<string | null> {
   const auth = req.headers.authorization;
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
+  await ensureFreshToken();
   return localToken;
 }
 
@@ -77,7 +147,7 @@ function getOrgUuid(req: express.Request): string {
 
 // List available sessions
 app.get("/api/sessions", async (req, res) => {
-  const token = getToken(req);
+  const token = await getToken(req);
   const orgUuid = getOrgUuid(req);
 
   if (!token) {
@@ -96,7 +166,7 @@ app.get("/api/sessions", async (req, res) => {
 // Connect to a Remote Control session
 app.post("/api/connect", async (req, res) => {
   const { sessionId } = req.body;
-  const token = getToken(req);
+  const token = await getToken(req);
   const orgUuid = getOrgUuid(req);
 
   if (!sessionId) {
@@ -307,6 +377,14 @@ app.get("/api/status", (_req, res) => {
 
 // --- Start ---
 loadLocalCredentials();
-app.listen(PORT, () => {
-  console.log(`\n[relay] WatchCode relay server running on http://localhost:${PORT}\n`);
-});
+
+(async () => {
+  // If we have a refresh token, do an initial refresh to get a valid access token
+  if (refreshToken && (!localToken || (tokenExpiresAt && Date.now() >= tokenExpiresAt - TOKEN_REFRESH_BUFFER_MS))) {
+    await refreshAccessToken();
+  }
+
+  app.listen(PORT, () => {
+    console.log(`\n[relay] WatchCode relay server running on http://localhost:${PORT}\n`);
+  });
+})();
