@@ -67,8 +67,7 @@ Edit `server/.env`:
 #     | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['claudeAiOauth']['refreshToken'])"
 ANTHROPIC_REFRESH_TOKEN=
 
-# Or provide a short-lived access token directly (expires in ~10 hours)
-# Run: claude oauth-token
+# Or provide a short-lived access token directly (expires in ~10 hours, not recommended for deployment)
 ANTHROPIC_TOKEN=
 
 # Optional: your Anthropic org UUID (run: claude auth status)

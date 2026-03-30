@@ -36,7 +36,7 @@ Protocol bridge between Anthropic's WebSocket-based Remote Control API and the A
 
 ### Authentication
 
-The relay server holds the Anthropic OAuth token server-side (via `ANTHROPIC_TOKEN` env var, or falls back to reading the macOS Keychain for local development). Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header).
+The relay server manages Anthropic OAuth credentials server-side. In production, set `ANTHROPIC_REFRESH_TOKEN` and the server will automatically refresh access tokens before they expire. Alternatively, `ANTHROPIC_TOKEN` can be set directly but expires in ~10 hours. For local development, the server falls back to reading credentials from the macOS Keychain. Clients authenticate to the relay using a shared secret (`x-watchcode-secret` header or `?secret=` query param for SSE).
 
 ### API Surface
 
@@ -88,7 +88,7 @@ The relay server holds the Anthropic OAuth token server-side (via `ANTHROPIC_TOK
 
 ### Security
 
-- **Server-side credentials.** The OAuth token is stored on the relay, not sent by clients.
+- **Server-side credentials.** OAuth tokens are managed on the relay with automatic refresh, not sent by clients.
 - **Shared secret auth.** All `/api` endpoints require the `x-watchcode-secret` header when configured.
 - **TLS required in production.** Deploy behind HTTPS to protect the shared secret in transit.
 - **Connection scoping.** Each `connectionId` is a UUID tied to a specific session.
